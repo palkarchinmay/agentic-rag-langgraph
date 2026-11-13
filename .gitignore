@@ -1,0 +1,34 @@
+# ── Secrets: never commit ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*service-account*.json
+*-sa.json
+credentials*.json
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv*/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# ── Runtime data (indexes, caches, logs, uploads) ──────────────────────
+chroma_db/
+chroma_db_test/
+data/
+logs/
+*.log
+.cache/
+.ragas_cache/
+.files/
+golden_eval_*.xlsx
+ragas_evaluations*.xlsx
+
+# ── Editors / OS ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

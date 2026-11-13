@@ -1,0 +1,98 @@
+[
+  {
+    "id": 1,
+    "category": "\ud83d\udcc4 Document Q&A",
+    "label": "Notice period",
+    "prompt": "What is the notice period mentioned in the document?"
+  },
+  {
+    "id": 2,
+    "category": "\ud83d\udcc4 Document Q&A",
+    "label": "Salary components",
+    "prompt": "What are the salary and compensation components in the document?"
+  },
+  {
+    "id": 3,
+    "category": "\ud83d\udcc4 Document Q&A",
+    "label": "Probation terms",
+    "prompt": "What are the probation period conditions?"
+  },
+  {
+    "id": 4,
+    "category": "\ud83d\udcc4 Document Q&A",
+    "label": "Benefits & allowances",
+    "prompt": "What benefits and allowances are mentioned in the document?"
+  },
+  {
+    "id": 5,
+    "category": "\ud83d\udcc4 Document Q&A",
+    "label": "Key terms summary",
+    "prompt": "Summarise the key terms and conditions in this document."
+  },
+  {
+    "id": 6,
+    "category": "\ud83d\udcc4 Document Q&A",
+    "label": "Joining & designation",
+    "prompt": "What is the joining date and designation mentioned?"
+  },
+  {
+    "id": 7,
+    "category": "\ud83d\udd22 Payroll Calculations",
+    "label": "PF on salary",
+    "prompt": "Calculate PF deduction on 25,000 basic salary."
+  },
+  {
+    "id": 8,
+    "category": "\ud83d\udd22 Payroll Calculations",
+    "label": "ESI deduction",
+    "prompt": "Calculate ESI deduction for a salary of 18,000 per month."
+  },
+  {
+    "id": 9,
+    "category": "\ud83d\udd22 Payroll Calculations",
+    "label": "Gratuity calculation",
+    "prompt": "Calculate gratuity for 5 years of service with basic salary 30,000."
+  },
+  {
+    "id": 10,
+    "category": "\ud83d\udd22 Payroll Calculations",
+    "label": "TDS on salary",
+    "prompt": "What is the approximate TDS on a monthly salary of 80,000?"
+  },
+  {
+    "id": 11,
+    "category": "\ud83d\udd22 Payroll Calculations",
+    "label": "Take-home from CTC",
+    "prompt": "Estimate take-home salary from a CTC of 8 LPA."
+  },
+  {
+    "id": 12,
+    "category": "\ud83d\udd22 Payroll Calculations",
+    "label": "HRA exemption",
+    "prompt": "Calculate HRA exemption for basic 30,000, HRA 15,000, rent paid 12,000 in a metro city."
+  },
+  {
+    "id": 13,
+    "category": "\ud83d\udca1 HR Knowledge",
+    "label": "How PF works",
+    "prompt": "Explain how Employee Provident Fund (EPF) works in India."
+  },
+  {
+    "id": 14,
+    "category": "\ud83d\udca1 HR Knowledge",
+    "label": "Gratuity eligibility",
+    "prompt": "What are the eligibility criteria for gratuity under the Payment of Gratuity Act?"
+  },
+  {
+    "id": 15,
+    "category": "\ud83d\udca1 HR Knowledge",
+    "label": "CTC vs gross vs net",
+    "prompt": "Explain the difference between CTC, gross salary, and net salary."
+  },
+  {
+    "id": 16,
+    "category": "\ud83d\udca1 HR Knowledge",
+    "label": "Notice period rules",
+    "prompt": "What are the standard notice period norms in Indian IT companies?"
+  }
+]

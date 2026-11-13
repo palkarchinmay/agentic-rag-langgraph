@@ -1,0 +1,35 @@
+/* public/stylesheet.css
+ *
+ * Custom overrides for the Chainlit frontend. Loaded via
+ * .chainlit/config.toml -> [UI] custom_css = '/public/stylesheet.css'
+ *
+ * ── Hide the native ChatSettings panel "Reset" button ──────────────────────
+ * This button is built into Chainlit's ChatSettings drawer and has no
+ * server-side hook — clicking it only reverts unsaved form edits back to
+ * each field's `initial=` value; it never calls our backend, so we can't
+ * wire it up to real reset logic. The actual working reset is the /reset
+ * slash command (see ui/commands.py), which the panel now tells you to use
+ * (see the "__reset_note" field in ui/chat_handlers.py).
+ *
+ * SELECTOR CONFIRMED via browser DevTools "Copy selector":
+ *   .pt-4 > button:nth-child(1) > span:nth-child(1)
+ * That targets the button's inner text label. We target the parent
+ * <button> itself (one level up, drop the trailing "> span:nth-child(1)")
+ * so the background/border are hidden too, not just the text.
+ *
+ * CAUTION: `.pt-4` is a generic Tailwind utility class (padding-top: 1rem)
+ * and may be reused elsewhere in the app. This rule is scoped as tightly
+ * as `nth-child(1)` allows, but after applying, click around the rest of
+ * the UI (chat message action buttons, Admin Panel buttons, upload
+ * confirm/cancel prompts) to confirm nothing else went invisible. If
+ * something else breaks, tell me what and I'll add a more specific
+ * ancestor selector to scope this to only the settings panel.
+ */
+
+.pt-4 > button:nth-child(1) {
+  color: transparent !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  pointer-events: none !important; /* also stops it being clickable, not just invisible */
+}

@@ -1,0 +1,25 @@
+[project]
+name = "RAG Platform"
+enable_telemetry = false
+
+[features]
+latex = false
+unsafe_allow_html = false
+edit_message = false
+
+[features.spontaneous_file_upload]
+enabled = true
+accept = ["*/*"]
+max_size_mb = 50
+max_files = 10
+
+[UI]
+name = "RAG Platform"
+default_collapse_content = true
+default_theme = "light"
+chat_settings_location = "sidebar"
+default_chat_settings_open = false
+custom_css = '/public/stylesheet.css'
+
+[meta]
+generated_by = "1.0.0"

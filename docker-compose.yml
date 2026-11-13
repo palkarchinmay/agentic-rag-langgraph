@@ -1,0 +1,123 @@
+# =============================================================================
+# docker-compose.yml — Local Docker development
+#
+# Default (API + Chainlit UI only, no cloud deps):
+#   docker-compose up --build
+#
+# With PostgreSQL audit DB:
+#   docker-compose --profile with-db up --build
+#
+# With Redis cache:
+#   docker-compose --profile with-redis up --build
+#
+# Full stack:
+#   docker-compose --profile with-db --profile with-redis up --build
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ── FastAPI RAG service ───────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: rag-api:local
+    container_name: rag-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      # These override .env — ensures correct values inside container
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      CHROMA_PERSIST_DIR: "/app/chroma_db"
+      CACHE_DIR: "/app/.cache"
+      RAGAS_CACHE_DIR: "/app/.ragas_cache"
+      LOG_DIR: "/app/logs"
+      DATA_DIR: "/app/data"
+      # Chainlit UI can reach API via Docker network
+      CORS_ORIGINS: "http://localhost:8080,http://chainlit:8080,http://127.0.0.1:8080"
+    volumes:
+      - chroma_data:/app/chroma_db
+      - cache_data:/app/.cache
+      - ragas_data:/app/.ragas_cache
+      - log_data:/app/logs
+      - ./prompts.json:/app/prompts.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # ── Chainlit UI ────────────────────────────────────────────────────────────
+  chainlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.chainlit
+    image: rag-chainlit:local
+    container_name: rag-chainlit
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      RAG_API_URL: "http://api:8000"    # internal Docker network
+      LOG_DIR: "/app/logs"
+    volumes:
+      - log_data:/app/logs
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── PostgreSQL audit DB (optional) ───────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: rag-db
+    environment:
+      POSTGRES_DB: ragdb
+      POSTGRES_USER: raguser
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-ragpassword}"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguser -d ragdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    profiles: ["with-db"]
+
+  # ── Redis cache (optional) ────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    command: >
+      redis-server
+      --requirepass "${REDIS_PASSWORD:-redispassword}"
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redispassword}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    profiles: ["with-redis"]
+
+volumes:
+  chroma_data:    # vector store — MUST persist, back this up
+  cache_data:     # semantic cache — can be lost, just slower
+  ragas_data:     # RAGAS scores — ephemeral
+  log_data:       # application logs — shared between api + chainlit
+  pg_data:        # PostgreSQL data
+  redis_data:     # Redis data
