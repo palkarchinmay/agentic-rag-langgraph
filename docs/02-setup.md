@@ -27,8 +27,8 @@ By the end of this chapter you will have two Python environments, a working
 ## 2.2 Get the code
 
 ```bash
-git clone https://github.com/<your-username>/agentic-rag.git
-cd agentic-rag
+git clone https://github.com/palkarchinmay/agentic-rag-langgraph.git
+cd agentic-rag-langgraph
 ```
 
 ## 2.3 Create the backend environment
@@ -214,7 +214,7 @@ Firebase user with the `admin` role.
 python -m pytest -q tests -p no:cacheprovider
 ```
 
-Expected: **all pass** on the fixed version of the repo. The tests are fully
+Expected: **all pass**. The tests are fully
 mocked, so they make no paid API calls. (The first run downloads tiktoken's
 encoding files, so it needs internet once.)
 

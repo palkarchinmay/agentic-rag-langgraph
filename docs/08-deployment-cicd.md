@@ -57,11 +57,11 @@ chainlit run chainlit_app.py --host 0.0.0.0 --port ${PORT} --headless
 Cloud Run tells a container which port to listen on through `PORT`, which is
 why the port is a variable.
 
-### Add a `.dockerignore`
+### The `.dockerignore`
 
-The project doesn't have one yet. Without it, `docker build` uploads your
+Without a `.dockerignore`, `docker build` uploads your
 whole folder as the build context, including both venvs (several GB) and
-`.env`. Create `.dockerignore` in the project root:
+`.env`. The repository's `.dockerignore` excludes them:
 
 ```
 .venv*/
@@ -93,18 +93,12 @@ postman/
 **Steps**
 
 1. Install Docker Desktop and start it.
-2. The compose file mounts `./users.json`, which doesn't exist in this
-   project. Either delete that line from the `api` volumes, or create an
-   empty file:
-   ```bash
-   echo {} > users.json
-   ```
-3. Build and start:
+2. Build and start:
    ```bash
    docker compose up --build
    ```
    The first build takes 10 to 20 minutes (the same ML stack as chapter 2).
-4. Open http://localhost:8080 and sign in.
+3. Open http://localhost:8080 and sign in.
 
 Inside Compose, the UI reaches the API at `http://api:8000`: `api` is the
 service name, resolved by Docker's internal DNS. The compose file sets
@@ -314,10 +308,6 @@ you want to approve each production deploy by hand.
 
 The first deploy creates the services and sets the settings that the CI
 pipeline will keep. `scripts/deploy_gcp.sh` does this for the API.
-
-> ⚠️ The script runs `docker build .`, but the project has no file named
-> `Dockerfile`, only `Dockerfile.api`. Add `--file Dockerfile.api` to the
-> `docker build` command in the script before running it.
 
 ```bash
 ./scripts/deploy_gcp.sh

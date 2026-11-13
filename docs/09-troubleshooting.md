@@ -140,7 +140,7 @@ Check these in order.
    `socket.create_connection` means the TCP connection to the API never
    completes: steps 1 and 2.
 
-With the patched `api_client.py`, a connection that can't be made fails
+With `API_CONNECT_TIMEOUT_SECONDS` in `api_client.py`, a connection that can't be made fails
 after `API_CONNECT_TIMEOUT_SECONDS` (default 10 s) with a clear error,
 instead of hanging.
 
@@ -149,8 +149,8 @@ instead of hanging.
 | Symptom | Cause | Fix |
 |---|---|---|
 | UI says **"timed out"** but the API log later says `indexing complete` | Scanned PDFs take ~30 s per page with EasyOCR on CPU; the UI stopped waiting | Set `API_TIMEOUT_SECONDS=900` in `.env` and restart Chainlit. Use Tesseract or a cloud OCR engine for speed |
-| `Expected collection name … [a-zA-Z0-9._-]` (Chroma) | Collection `user_<email>` contains `@`, which Chroma rejects | Apply the `chroma_safe_name` patch (`vector_store.py`, `retriever_service.py`) |
-| Log says `scanned → easyocr` although you chose Tesseract or Document AI | The UI's engine name (`tesseract`, `google_docai`) didn't match the internal key, and unknown names fell back to EasyOCR | Apply the `ocr.py` / `index.py` patch (`normalize_method`) |
+| `Expected collection name … [a-zA-Z0-9._-]` (Chroma) | Collection `user_<email>` contains `@`, which Chroma rejects | Fixed in this repo by `chroma_safe_name()` (`vector_store.py`). If you see it, you are on an old copy: pull the latest code |
+| Log says `scanned → easyocr` although you chose Tesseract or Document AI | The UI's engine name (`tesseract`, `google_docai`) didn't match the internal key, and unknown names fell back to EasyOCR | Fixed in this repo by `ocr.normalize_method()`. Pull the latest code; if it persists, check the engine name in ⚙️ Settings |
 | `TesseractNotFoundError`, or a fallback-to-EasyOCR warning | The Tesseract program isn't installed or not on PATH | Install it (chapter 4.4) and set `TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe` |
 | "75 chunks" but "67 upserted" | Not an error: the quality filter dropped short or garbled chunks | Nothing to fix. Very noisy scans lose more chunks; use a better OCR engine |
 | `BM25 … total=134` after uploading the same file again | Uploading adds chunks; it doesn't replace them, so every chunk is now duplicated | Run `/clear`, then upload once |
@@ -178,7 +178,7 @@ Work through the pipeline in order, using 🔍 Diagnostics:
 
 - **Cause:** a display bug. The API didn't pass `rerank_score` to the UI,
   although reranking did run.
-- **Fix:** apply `api-fixes-2026-11-13.zip`.
+- **Fix:** fixed in this repo (the API now returns `rerank_score`). Pull the latest code and restart the API.
 
 ### A general question ("capital of France") is routed as RAG
 
@@ -228,8 +228,8 @@ Work through the pipeline in order, using 🔍 Diagnostics:
 
 | Failing test | Cause | Status |
 |---|---|---|
-| `test_step5.py::test_query_router` | It imports `_heuristic_classify`, which was renamed to `_classify_query` | Stale test, fixed in the GitHub prep |
-| `test_llm_guard.py::…test_timeout_kills_slow_llm` | Passes alone, fails in the full run: another test imports `llm_resilience` first with a 60 s timeout | Test-order bug, fixed in the GitHub prep |
+| `test_step5.py::test_query_router` | It imports `_heuristic_classify`, which was renamed to `_classify_query` | Fixed: the test now uses `_classify_query` |
+| `test_llm_guard.py::…test_timeout_kills_slow_llm` | Passes alone, fails in the full run: another test imports `llm_resilience` first with a 60 s timeout | Fixed: the test reloads the module with its own settings |
 | `test_conversation_service.py::TestTokenCounting…` | tiktoken downloads its encoding on first use; fails without internet | Run once with internet access |
 
 Run a single test with its output visible:
@@ -242,9 +242,7 @@ python -m pytest -q tests/test_step5.py::test_query_router -p no:cacheprovider -
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `docker compose up` fails mounting `users.json` | The file doesn't exist | `echo {} > users.json`, or remove that volume line |
 | Build is huge and slow | No `.dockerignore`; the venvs are sent as build context | Add the `.dockerignore` from chapter 8.1 |
-| `deploy_gcp.sh`: "failed to read dockerfile" | It builds with `Dockerfile`, which doesn't exist | Add `--file Dockerfile.api` |
 | On Cloud Run, documents disappear after a while | Local Chroma on a container disk | `VECTOR_BACKEND=qdrant` (chapter 8.3) |
 | Exact-term searches get worse on Cloud Run | The BM25 index is on local disk and is lost on new instances | Known limitation (chapter 8.3) |
 | Indexing fails after exactly 300 s on Cloud Run | The service's request timeout | `gcloud run services update … --timeout=900` |
@@ -258,8 +256,8 @@ When you ask for help, in an issue or a chat, include:
 1. what you did (the exact command, or what you clicked);
 2. what you expected, and what happened instead;
 3. the API log lines for that **trace id**;
-4. OS, Python version (`python --version`), and whether you applied the
-   patches.
+4. OS, Python version (`python --version`), and the commit you're on
+   (`git log --oneline -1`).
 
 **Never paste** `.env` contents, API keys, service-account JSON, ID tokens or
 passwords. If one leaks, rotate it immediately:

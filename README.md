@@ -77,7 +77,7 @@ The [setup chapter](docs/02-setup.md) walks through every step, including
 Windows.
 
 ```bash
-git clone https://github.com/<your-username>/<repo>.git && cd <repo>
+git clone https://github.com/palkarchinmay/agentic-rag-langgraph.git && cd agentic-rag-langgraph
 cp .env.example .env                      # then fill it in (docs/02-setup.md)
 
 # backend
@@ -134,6 +134,19 @@ python -m pytest -q tests -p no:cacheprovider
 
 The tests are fully mocked, so they make no paid API calls. The first run
 downloads tiktoken's encoding files and needs internet access once.
+
+## Known limitations
+
+- **CI/CD:** the build and deploy jobs in `.github/workflows/deploy.yml` need
+  your own Google Cloud project. Until you configure it
+  ([chapter 8](docs/08-deployment-cicd.md)), only the test job will pass on
+  forks.
+- **BM25 on Cloud Run:** the keyword index is stored on local disk. On
+  serverless platforms it is lost when an instance restarts, and hybrid
+  search falls back to vector-only.
+- **Rule-based router:** questions are classified with regular expressions.
+  Unusual phrasing can take the slower RAG path. The groundedness check
+  catches the result, so this costs time, not correctness.
 
 ## Tech stack
 
