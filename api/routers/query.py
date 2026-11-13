@@ -1,14 +1,14 @@
 ﻿"""
-api/routers/query.py â€” POST /api/v1/query
+api/routers/query.py — POST /api/v1/query
 
 Calls the existing LangGraph pipeline (graph.invoke) exactly the same
-way chat_panel.py does â€” zero pipeline code is duplicated.
+way chat_panel.py does — zero pipeline code is duplicated.
 
 Request:  QueryRequest  (query + config)
 Response: QueryResponse (response + metadata)
 
 STEP 4 ADDITIONS:
-  - conversation_id (optional) on QueryRequest/QueryResponse â€” when
+  - conversation_id (optional) on QueryRequest/QueryResponse — when
     provided, server fetches/builds chat history from Postgres instead
     of requiring the client to resend it. Backward compatible: clients
     that keep sending chat_history directly (e.g. existing Streamlit
@@ -34,7 +34,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=4000,
                        description="The question to ask")
 
-    # LLM settings â€” mirrors sidebar config
+    # LLM settings — mirrors sidebar config
     llm_provider:  str   = Field("openai",         description="LLM provider")
     llm_model:     str   = Field("gpt-4o-mini",    description="Model identifier")
     temperature:   float = Field(0.0, ge=0.0, le=1.0)
@@ -109,6 +109,7 @@ class ChunkModel(BaseModel):
     label:   str    # matches CitationModel.label for easy lookup
     content: str    # actual retrieved text
     score:   float = 0.0
+    rerank_score: Optional[float] = None   # cross-encoder score; None if rerank was off
 
 
 class UsageModel(BaseModel):
@@ -154,7 +155,7 @@ class QueryResponse(BaseModel):
     # Retrieved chunks with content (top 5)
     retrieved_chunks: List[ChunkModel] = []
 
-    # RAGAS evaluation (may be pending â€” poll using eval_key)
+    # RAGAS evaluation (may be pending — poll using eval_key)
     ragas: dict = {}
 
     # Whether answer came from documents or general knowledge
@@ -163,7 +164,7 @@ class QueryResponse(BaseModel):
     # Trace ID for log correlation
     trace_id: str = ""
 
-    # Conversation persistence (Step 4) â€” client should store this and
+    # Conversation persistence (Step 4) — client should store this and
     # pass it back on the next turn to continue this conversation
     conversation_id: Optional[str] = None
 
@@ -185,7 +186,10 @@ async def query_endpoint(
     current_user: dict = Depends(require_auth),
 ) -> QueryResponse:
     trace_id = str(uuid.uuid4())[:8]
-    # Override user_role from JWT â€” client can't self-elevate
+    # A non-admin may only search their own collection (user_<email>).
+    from api.middleware.auth import assert_collection_access
+    assert_collection_access(current_user, req.collection_name)
+    # Override user_role from JWT — client can't self-elevate
     req = req.model_copy(update={
         "user_role": current_user.get("role", "user")
     })
@@ -212,7 +216,7 @@ async def query_endpoint(
                 detail=quota_result["user_message"],
             )
 
-    # â”€â”€ Build runtime_config â€” exact same shape as chat_panel.py â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€â”€ Build runtime_config — exact same shape as chat_panel.py â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     runtime_config: Dict[str, Any] = {
         # LLM
         "llm_provider":    req.llm_provider,
@@ -246,7 +250,7 @@ async def query_endpoint(
     # â”€â”€ Resolve conversation history (Step 4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # If conversation_id was sent, fetch token-aware history from Postgres.
     # Falls back to client-sent chat_history if no conversation_id, or if
-    # the DB isn't configured (graceful degradation â€” app still works
+    # the DB isn't configured (graceful degradation — app still works
     # exactly as before Step 4 if AUDIT_DB_URL isn't set).
     resolved_history = req.chat_history
     conversation_id  = req.conversation_id
@@ -256,7 +260,7 @@ async def query_endpoint(
         from app.services import conversation_service as conv_service
 
         if conversation_id:
-            # Existing conversation â€” verify ownership, fetch context window
+            # Existing conversation — verify ownership, fetch context window
             conv = await conv_service.get_conversation(
                 _db_pool, conversation_id, current_user.get("sub"),
                 is_admin=current_user.get("role") == "admin",
@@ -266,7 +270,7 @@ async def query_endpoint(
                     _db_pool, conversation_id, model=req.llm_model,
                 )
             else:
-                # Invalid/inaccessible conversation_id â€” start fresh rather
+                # Invalid/inaccessible conversation_id — start fresh rather
                 # than failing the whole request
                 logger.warning(
                     "[%s] conversation_id=%s not found/inaccessible, starting new",
@@ -276,7 +280,7 @@ async def query_endpoint(
 
         
         if not conversation_id:
-            # No conversation_id provided â€” create one so the client can
+            # No conversation_id provided — create one so the client can
             # continue this thread on the next turn
             conversation_id = await conv_service.create_conversation(
                 _db_pool, current_user.get("sub"), first_message=req.query,
@@ -317,7 +321,7 @@ async def query_endpoint(
                 _db_pool, conversation_id, "assistant",
                 result.get("response", ""), model=req.llm_model,
             )
-            # Summarize older turns if the conversation has grown large â€”
+            # Summarize older turns if the conversation has grown large —
             # keeps the context window from needing to drop history outright
             if await conv_service.should_summarize(_db_pool, conversation_id):
                 from app.providers.llm.factory import get_llm
@@ -332,7 +336,7 @@ async def query_endpoint(
                 )
         except Exception as e:
             # Persistence failures should never break the actual answer
-            # the user already received â€” log and move on
+            # the user already received — log and move on
             logger.error("[%s] conversation persistence failed: %s", trace_id, e)
 
     # â”€â”€ Extract results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -382,7 +386,7 @@ async def query_endpoint(
         except Exception:
             pass
 
-    logger.info("[%s] done in %.2fs â€” type=%s cache=%s tokens=%d cost=$%.5f user=%s",
+    logger.info("[%s] done in %.2fs — type=%s cache=%s tokens=%d cost=$%.5f user=%s",
                 trace_id, elapsed,
                 metadata.get("query_type", "?"),
                 metadata.get("cache_hit", False),
@@ -413,7 +417,7 @@ async def query_endpoint(
         "answer_relevancy":rel,
     })
 
-    # Build ragas dict â€” include eval_key so Streamlit can poll
+    # Build ragas dict — include eval_key so Streamlit can poll
     ragas_response = {}
     if eval_key:
         if faith is not None:
@@ -445,7 +449,7 @@ async def query_endpoint(
 
     # Strip embedded Sources section from ALL responses.
     # The LLM prompt instructs it to write "Source:" in the text, but
-    # the UI also renders citations from metadata â€” causing duplication.
+    # the UI also renders citations from metadata — causing duplication.
     # Match: "Source:", "Sources:", "**Sources:**", "Source" alone on a line.
     import re
     _src_re = re.compile(
@@ -477,16 +481,18 @@ async def query_endpoint(
             if doc_type == "pdf" or isinstance(page, int):
                 loc = f"Page {page + 1}" if isinstance(page, int) else ""
             elif doc_type == "pptx" or isinstance(slide, int):
-                loc = f"Slide {slide}" + (f" â€” {hdg}" if hdg else "")                       if isinstance(slide, int) else ""
+                loc = f"Slide {slide}" + (f" — {hdg}" if hdg else "")                       if isinstance(slide, int) else ""
             elif doc_type == "docx":
-                loc = f"Â§ {hdg}" if hdg else ""
+                loc = f"§ {hdg}" if hdg else ""
             else:
-                loc = f"Â§ {hdg}" if hdg else ""
+                loc = f"§ {hdg}" if hdg else ""
 
             label   = src + (f", {loc}" if loc else "")
             content = doc.get("content", "")
             score   = float(doc.get("score", 0.0))
-            chunks.append(ChunkModel(label=label, content=content, score=score))
+            rr      = doc.get("rerank_score")
+            chunks.append(ChunkModel(label=label, content=content, score=score,
+                                     rerank_score=float(rr) if rr is not None else None))
         return chunks
 
     return QueryResponse(

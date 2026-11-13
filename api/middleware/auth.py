@@ -76,3 +76,25 @@ def require_role(*roles: str):
             )
         return payload
     return _check
+
+# ── Collection ownership ──────────────────────────────────────────────────────
+# Each user's documents live in the collection "user_<email>". A non-admin may
+# only read or write their own collection; "default" (no documents) is allowed
+# so general questions still work. Admins may use any collection.
+
+def own_collection(user: dict) -> str:
+    return f"user_{user.get('email') or user.get('sub') or 'default'}"
+
+
+def assert_collection_access(user: dict, collection_name: str) -> None:
+    if user.get("role") == "admin":
+        return
+    if collection_name in ("", "default", None):
+        return
+    # Case-insensitive: the UI builds the name from the email as typed at
+    # login, while the token carries Firebase's lower-cased email.
+    if collection_name.lower() != own_collection(user).lower():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only access your own documents.",
+        )

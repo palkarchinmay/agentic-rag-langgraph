@@ -109,8 +109,17 @@ async def index_endpoint(
     from app.ingestion.ocr import normalize_method
     ocr_method = normalize_method(ocr_method)
     # Use JWT username by default — prevents users indexing into others' collections
-    effective_username = username or current_user.get("sub", "default")
-    collection_name    = f"user_{effective_username}"
+    # Non-admins always index into their own collection; the username form
+    # field is honoured only for admins (who may index on behalf of a user).
+    from api.middleware.auth import own_collection, assert_collection_access
+    if username and username != "default" and (
+        current_user.get("role") == "admin"
+        or f"user_{username}".lower() == own_collection(current_user).lower()
+    ):
+        collection_name = f"user_{username}"   # keep the UI's spelling
+    else:
+        collection_name = own_collection(current_user)
+    assert_collection_access(current_user, collection_name)
     file_names         = [f.filename for f in files]
 
     logger.info("[%s] index request: files=%s collection=%s",
@@ -304,8 +313,9 @@ async def delete_index(
     # previously compared against current_user.get('sub', '') (the raw
     # Firebase uid), which would never match the actual collection name
     # and would 403 any non-admin user trying to delete their own data.
-    expected = f"user_{current_user.get('email', '')}"
-    if current_user.get("role") != "admin" and collection_name != expected:
+    from api.middleware.auth import own_collection
+    expected = own_collection(current_user)
+    if current_user.get("role") != "admin" and collection_name.lower() != expected.lower():
         from fastapi import HTTPException
         raise HTTPException(
             status_code=403,
