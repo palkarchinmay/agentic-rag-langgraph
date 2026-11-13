@@ -96,39 +96,54 @@ that were too short or looked like binary garbage
 
 ## 3.4 Ask a question about the document
 
-Ask something whose answer is in the PDF. Example with an offer letter:
+Ask something whose answer is in the PDF. The screenshots below use a
+scanned employment offer letter (file name and personal details redacted):
 
 > **what is the notice period?**
 
 ![Answer with sources](images/01-rag-answer-with-sources.png)
 
-The footer reads: route **RAG**, **9.6 s** end to end, **1,187 tokens**,
-**$0.0002**. The answer cites file and page for every source.
+The answer covers both cases in the letter (30 days during probation, 60
+days after) and cites the file and page of every source. The footer reads:
+route **RAG**, **8.9 s** end to end, **1,173 tokens**, **$0.00021**.
 
 Admins and engineers can expand **Used 🔍 Diagnostics** to see the chunks
 the answer was built from:
 
 ![Retrieved chunks](images/02-diagnostics-retrieved-chunks.png)
 
-Look closely at that chunk: `Se4k+-S-fns`, `Murbai 400 0e8`. That's OCR
-noise from a scanned page. Also notice `[AADHAAR]` and `[IBAN]`: personal
-data was **masked at ingestion**, before it was ever embedded.
+What to notice:
+
+- **Rerank score** (4.97 and 4.88): the cross-encoder's relevance score.
+  Above 2.0 counts as high confidence, so the groundedness check accepts the
+  answer without the second, embedding-based test (chapter 5.6).
+- **RRF fusion score** (≈ 0.031): the score from merging vector and BM25
+  results. It is tiny by design (chapter 6, B6).
+- **OCR noise**: "whatsaever" instead of "whatsoever". On scanned pages, the
+  text the system searches is only as good as the OCR (the blurred part of
+  the chunk held a company address, garbled in the same way).
+- **PII masking**: in your own chunks you may see tags like `[AADHAAR]` or
+  `[IBAN]` where personal data was masked at ingestion, before it was ever
+  embedded (chapter 4.13).
 
 ## 3.5 Evaluate the answer with RAGAS
 
-Click **📊 Evaluate (RAGAS)** under the answer.
+Click **📊 Evaluate (RAGAS)** under the answer. It takes 15 to 30 seconds.
 
 ![RAGAS scores](images/03-ragas-evaluation.png)
 
 | Metric | Score | Meaning |
 |---|---|---|
-| Faithfulness | 0.40 | Share of the answer's claims that the retrieved text supports. Low here because the OCR'd text is noisy, so the judge can't verify claims the LLM read correctly. |
-| Answer relevancy | 0.72 | How directly the answer addresses the question. |
+| Faithfulness | 1.000 | Share of the answer's claims that the retrieved chunks support. Every claim here was found in the sources. |
+| Answer relevancy | 0.696 | How directly the answer addresses the question. Lower here because the answer adds a sentence about company policies that the question didn't ask for. |
 
-This is a real lesson: **RAG quality is capped by ingestion quality.**
-Re-index the same file with a better OCR engine (Tesseract or Google
-Document AI) and compare the scores. Chapter 7 explains how RAGAS computes
-these numbers.
+Scores vary from run to run and depend heavily on the chunks. When
+we first indexed this letter with an older OCR setup, the same question
+scored only **0.40** faithfulness. The answer was correct, but the noisy
+chunks didn't let the judge verify it. That's the real lesson: **RAG
+quality is capped by ingestion quality.** Re-index a scanned file with a
+better OCR engine (Tesseract or Google Document AI) and compare. Chapter 7
+explains how RAGAS computes these numbers.
 
 ## 3.6 Ask a general question
 
