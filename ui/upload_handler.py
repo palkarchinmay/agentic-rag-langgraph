@@ -6,6 +6,7 @@ Called from ui.chat_handlers.on_message when a message carries file
 elements.
 """
 
+from app.config.vision_models import vision_model_choices, caption_spec, caption_provider_model
 import os
 import logging
 
@@ -129,8 +130,8 @@ async def handle_file_upload(files: list) -> bool:
                 ocr_method=config.get("ocr_method", "easyocr"),
                 use_vision=vision_on,
                 caption_images=vision_on,
-                caption_provider=config.get("caption_provider", config.get("llm_provider", "openai")),
-                caption_model=config.get("caption_model", config.get("llm_model", "gpt-4o-mini")),
+                caption_provider=caption_provider_model(config)[0],
+                caption_model=caption_provider_model(config)[1],
                 chunk_size=config.get("chunk_size", 500),
                 chunk_overlap=config.get("chunk_overlap", 50),
                 chunk_method=config.get("chunk_method", "recursive"),

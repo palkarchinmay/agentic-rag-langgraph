@@ -1,6 +1,14 @@
 """
 llm/factory.py — Multi-cloud LLM provider factory.
 
+Providers: openai, azure, bedrock, vertex, google, anthropic, ollama (local).
+
+Every provider here also takes images (vision): pass a HumanMessage whose
+content is a list with {"type": "image_url", "image_url": {"url":
+"data:image/png;base64,..."}} blocks. app/ingestion/vision.py does this; the
+model itself must be vision-capable (e.g. gpt-4o-mini, gemini-2.0-flash,
+claude-opus-5-5, llava / llama3.2-vision on Ollama).
+
 Bedrock supports two auth methods:
   1. IAM keys (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY) — traditional
   2. Bedrock API key (BEDROCK_API_KEY) — newer, simpler, like OpenAI keys
@@ -115,16 +123,72 @@ def get_llm(provider: str, model: str, temperature: float = 0.0):
                     "ANTHROPIC_API_KEY not set in .env\n"
                     "Get key: console.anthropic.com → API Keys"
                 )
-            return ChatAnthropic(
-                model=model,
-                api_key=api_key,
-                temperature=temperature,
-            )
+            kwargs = dict(model=model, api_key=api_key,
+                          max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "16000")))
+            # Claude Opus 5.5 / Sonnet 5.5 / Fable and other 4.7+ models reject
+            # temperature/top_p/top_k with a 400. Only older models get it.
+            if _anthropic_accepts_sampling(model):
+                kwargs["temperature"] = temperature
+            return ChatAnthropic(**kwargs)
         except ImportError:
             raise ImportError("pip install langchain-anthropic")
 
+    elif provider == "ollama":
+        # Local models (no cloud, no key). Vision: llava, llama3.2-vision,
+        # qwen2.5vl, gemma3 ... pulled with `ollama pull <model>`.
+        try:
+            from langchain_ollama import ChatOllama
+        except ImportError:
+            raise ImportError("pip install langchain-ollama")
+        return ChatOllama(
+            model=model,
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+            temperature=temperature,
+        )
+
     else:
         raise ValueError(f"Unsupported LLM provider: '{provider}'")
+
+
+_NO_SAMPLING_PREFIXES = (
+    "claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-fable",
+    "claude-mythos", "claude-opus-4-7", "claude-opus-4-8",
+)
+
+
+def _anthropic_accepts_sampling(model: str) -> bool:
+    """False for Claude models that 400 on temperature/top_p/top_k.
+    Also handles Bedrock ids like 'us.anthropic.claude-opus-5-5'."""
+    m = (model or "").lower()
+    if "anthropic." in m:
+        m = m.split("anthropic.", 1)[1]
+    return not any(m.startswith(p) for p in _NO_SAMPLING_PREFIXES)
+
+
+def parse_model_spec(spec: str, default_provider: str = "openai"):
+    """'openai:gpt-4o-mini' -> ('openai', 'gpt-4o-mini').
+    A bare model name uses default_provider. Bedrock ids keep their colons
+    ('bedrock:us.anthropic.claude-...:0')."""
+    spec = (spec or "").strip()
+    if ":" in spec:
+        provider, model = spec.split(":", 1)
+        if provider.lower().strip() in available_providers():
+            return provider.lower().strip(), model.strip()
+    return default_provider, spec
+
+
+def get_vision_llm(spec: str = ""):
+    """
+    Vision-capable chat model from a 'provider:model' spec, e.g.
+      openai:gpt-4o-mini      google:gemini-2.0-flash   vertex:gemini-2.0-flash-001
+      anthropic:claude-opus-5-5   azure:gpt-4o           ollama:llama3.2-vision
+      bedrock:us.anthropic.claude-sonnet-4-5-20250514-v1:0
+    Empty spec -> VISION_MODEL env var -> anthropic:claude-opus-5-5.
+    Used by app/ingestion/vision.py (and chart_interpreter.py's caption model).
+    """
+    spec = spec or os.getenv("VISION_MODEL", "anthropic:claude-opus-5-5")
+    provider, model = parse_model_spec(spec)
+    return get_llm(provider, model or default_model(provider))
 
 
 def _get_bedrock_llm(model: str, temperature: float):
@@ -202,6 +266,37 @@ def _bedrock_with_api_key(model: str, temperature: float, api_key: str):
         def _is_nova(self) -> bool:
             return "nova" in self.model_id.lower()
 
+        def _convert_content(self, content):
+            """LangChain content (str or list of text/image_url blocks) ->
+            Bedrock body content for Claude or Nova."""
+            if isinstance(content, str):
+                return [{"text": content}] if self._is_nova() else content
+            out = []
+            for block in content:
+                if isinstance(block, str):
+                    block = {"type": "text", "text": block}
+                btype = block.get("type")
+                if btype == "text":
+                    out.append({"text": block["text"]} if self._is_nova()
+                               else {"type": "text", "text": block["text"]})
+                elif btype == "image_url":
+                    url = block["image_url"]
+                    url = url["url"] if isinstance(url, dict) else url
+                    if not url.startswith("data:"):
+                        raise ValueError("Bedrock API-key path needs data: URLs for images")
+                    header, b64 = url.split(",", 1)
+                    media = header[5:].split(";")[0]          # image/png
+                    if self._is_nova():
+                        out.append({"image": {"format": media.split("/")[1],
+                                              "source": {"bytes": b64}}})
+                    elif self._is_claude():
+                        out.append({"type": "image", "source": {
+                            "type": "base64", "media_type": media, "data": b64}})
+                    else:
+                        raise ValueError(
+                            f"Model {self.model_id} has no image support on this path")
+            return out
+
         def _build_payload(self, messages):
             """Build correct payload based on model family."""
             system_content = ""
@@ -213,8 +308,7 @@ def _bedrock_with_api_key(model: str, temperature: float, api_key: str):
                 elif isinstance(msg, HumanMessage):
                     user_messages.append({
                         "role": "user",
-                        "content": [{"text": msg.content}] if self._is_nova()
-                                   else msg.content
+                        "content": self._convert_content(msg.content)
                     })
                 elif isinstance(msg, AIMessage):
                     user_messages.append({
@@ -234,10 +328,12 @@ def _bedrock_with_api_key(model: str, temperature: float, api_key: str):
                 # Anthropic Claude format
                 payload = {
                     "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 2048,
-                    "temperature": self.temp,
+                    "max_tokens": 4096,
                     "messages": user_messages,
                 }
+                # Newer Claude models reject temperature with a 400
+                if _anthropic_accepts_sampling(self.model_id):
+                    payload["temperature"] = self.temp
                 if system_content:
                     payload["system"] = system_content
 
@@ -336,7 +432,7 @@ def _bedrock_with_iam(model: str, temperature: float):
 
 
 def available_providers() -> list:
-    return ["openai", "azure", "bedrock", "vertex", "google"]
+    return ["openai", "azure", "bedrock", "vertex", "google", "anthropic", "ollama"]
 
 
 def default_model(provider: str) -> str:
@@ -346,4 +442,6 @@ def default_model(provider: str) -> str:
         "bedrock": "us.anthropic.claude-sonnet-4-5-20250514-v1:0",
         "vertex":  "gemini-2.0-flash-001",
         "google":  "gemini-2.0-flash",
+        "anthropic": os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5"),
+        "ollama":  os.getenv("OLLAMA_MODEL", "llama3.2-vision"),
     }.get(provider, "gpt-4o-mini")

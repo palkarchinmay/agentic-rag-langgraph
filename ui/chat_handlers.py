@@ -11,6 +11,7 @@ slash commands (ui.commands), and the core RAG query flow
 more deferred imports back into chainlit_app.py.
 """
 
+from app.config.vision_models import vision_model_choices, caption_spec, caption_provider_model
 import os
 import logging
 
@@ -250,16 +251,8 @@ async def on_chat_start():
             cl.input_widget.Select(
                 id="caption_model_full",
                 label="🖼️ Vision/Caption Model (provider:model)",
-                values=[
-                    "openai:gpt-4o-mini", "openai:gpt-4o",
-                    "google:gemini-2.5-flash", "google:gemini-2.0-flash",
-                    "anthropic:claude-3-5-sonnet", "anthropic:claude-3-haiku",
-                    "azure:gpt-4o-mini", "azure:gpt-4o",
-                ],
-                initial_value=(
-                    f"{config.get('caption_provider', config.get('llm_provider', 'openai'))}:"
-                    f"{config.get('caption_model', config.get('llm_model', 'gpt-4o-mini'))}"
-                ),
+                values=vision_model_choices(caption_spec(config)),
+                initial_value=caption_spec(config),
             ),
         ]
 
