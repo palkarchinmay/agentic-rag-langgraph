@@ -21,6 +21,14 @@ Tier 4 — Azure:
   azure_di    : Azure Document Intelligence — strong on invoices, forms.
                 Good EU/compliance story.
 
+Tier 5 — Vision LLM (any provider):
+  vision      : a vision-language model reads the page image and returns
+                Markdown: text in reading order plus charts as label/value
+                tables and diagrams as box/arrow lists. Model is chosen by
+                VISION_MODEL=provider:model (default anthropic:claude-opus-5-5;
+                also openai:, google:, vertex:, azure:, bedrock:, ollama:).
+                See vision.py.
+
 All imports are LAZY — only loaded when the backend is actually called.
 This means the app starts fast and doesn't crash if a cloud SDK isn't configured.
 
@@ -336,11 +344,27 @@ def extract_text_azure_di(image_np) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Tier 5 — Vision LLM (provider-agnostic, VISION_MODEL)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_text_vision(image_np) -> str:
+    """Full-page transcription with the configured vision model. Falls back
+    to easyocr if the model returns nothing (no key, refusal, error)."""
+    from app.ingestion.vision import extract_text_vision as _v
+    text = _v(image_np)
+    if not text:
+        logger.warning("Vision OCR returned no text -- falling back to easyocr")
+        return extract_text_easyocr(image_np)
+    return text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Unified router — called from parser.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Quality ranking (higher = better for financial docs)
 _OCR_QUALITY_RANK = {
+    "vision":     4,   # layout + charts + diagrams, not just characters
     "docai":      4,   # best overall
     "textract":   3,   # best for structured tables on AWS
     "azure_di":   3,   # best for forms/invoices on Azure
@@ -354,6 +378,7 @@ _OCR_DISPATCH = {
     "textract":    extract_text_textract,
     "docai":       extract_text_docai,
     "azure_di":    extract_text_azure_di,
+    "vision":      extract_text_vision,
 }
 
 
@@ -366,6 +391,10 @@ _OCR_ALIASES = {
     "document_ai":  "docai",
     "azure":        "azure_di",
     "aws_textract": "textract",
+    "vlm":          "vision",
+    "vision_llm":   "vision",
+    "claude":       "vision",          # VISION_MODEL picks the provider
+    "claude_vision": "vision",         # name used by the earlier patch
 }
 
 
@@ -382,6 +411,7 @@ def extract_text(image_np, method: str = "easyocr") -> str:
     Args:
         image_np : BGR numpy array
         method   : 'pytesseract' | 'easyocr' | 'textract' | 'docai' | 'azure_di'
+                   | 'vision'
                    Defaults to OCR_METHOD env var, else 'easyocr'
 
     Returns: extracted text string

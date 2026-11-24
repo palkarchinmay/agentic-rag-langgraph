@@ -1,0 +1,311 @@
+[
+ {
+  "id": "T1",
+  "question": "How much did socially responsible investment assets grow from 1995 to 2014?",
+  "gold": "From $639 billion in 1995 to $6.6 trillion in 2014, a 929% increase.",
+  "pages": [
+   1
+  ],
+  "visual": false,
+  "evidence": [
+   "639 billion",
+   "6\\.6 trillion",
+   "929%"
+  ],
+  "answer": [
+   "639",
+   "6\\.6 trillion",
+   "929"
+  ]
+ },
+ {
+  "id": "T2",
+  "question": "What share of total dollars under management in the United States do SRI assets account for?",
+  "gold": "About 17%.",
+  "pages": [
+   1,
+   6
+  ],
+  "visual": false,
+  "evidence": [
+   "17%"
+  ],
+  "answer": [
+   "17\\s?%"
+  ]
+ },
+ {
+  "id": "T3",
+  "question": "How large was the green bond market at the end of 2013 and 2014, and what was the estimate for 2015?",
+  "gold": "$11 billion (2013), $36.6 billion (2014), estimated $100 billion by end of 2015.",
+  "pages": [
+   6
+  ],
+  "visual": false,
+  "evidence": [
+   "11 billion",
+   "36\\.6 billion",
+   "100 billion"
+  ],
+  "answer": [
+   "11 billion",
+   "36\\.6",
+   "100 billion"
+  ]
+ },
+ {
+  "id": "T4",
+  "question": "Between 2012 and 2014, how many institutions and investment managers filed or cofiled shareholder resolutions, and how many assets did they target?",
+  "gold": "175 institutions and 27 investment managers, targeting $1.72 trillion.",
+  "pages": [
+   4
+  ],
+  "visual": false,
+  "evidence": [
+   "175 institu",
+   "27 investment managers",
+   "1\\.72 trillion"
+  ],
+  "answer": [
+   "175",
+   "27",
+   "1\\.72 trillion"
+  ]
+ },
+ {
+  "id": "T5",
+  "question": "What did the 2012 Viviers and Eccles review of SRI research find?",
+  "gold": "Across 190 papers (1975-2009), 56% found SRI performance in line with non-SRI and 23% found SRI outperformed.",
+  "pages": [
+   8
+  ],
+  "visual": false,
+  "evidence": [
+   "190",
+   "56%",
+   "23%"
+  ],
+  "answer": [
+   "56",
+   "23"
+  ]
+ },
+ {
+  "id": "T6",
+  "question": "What did five New York City retirement systems announce in October 2015?",
+  "gold": "Plan to invest $150 million in the AFL-CIO Housing Investment Trust to create or sustain 20,000 affordable housing units and 14,700 jobs.",
+  "pages": [
+   7
+  ],
+  "visual": false,
+  "evidence": [
+   "150 million",
+   "20,000",
+   "14,700"
+  ],
+  "answer": [
+   "150 million",
+   "20,000",
+   "14,700"
+  ]
+ },
+ {
+  "id": "T7",
+  "question": "When was DOL Interpretive Bulletin 2015-01 published and what test does it describe?",
+  "gold": "October 26, 2015; the 'all things being equal' test.",
+  "pages": [
+   8
+  ],
+  "visual": false,
+  "evidence": [
+   "October 26, 2015",
+   "all things being equal"
+  ],
+  "answer": [
+   "October 26, 2015",
+   "all things being equal"
+  ]
+ },
+ {
+  "id": "V1",
+  "question": "What is the full title of the article?",
+  "gold": "Creating Social Impact Through Responsible Investing",
+  "pages": [
+   1
+  ],
+  "visual": true,
+  "evidence": [
+   "Creating Social Impact",
+   "Responsib ?le",
+   "Investing"
+  ],
+  "answer": [
+   "Responsible Investing"
+  ]
+ },
+ {
+  "id": "V2",
+  "question": "Which impact theme has the most fixed income impact funds, and how many funds does it have?",
+  "gold": "Access to Finance, 85 funds (Figure 4).",
+  "pages": [
+   5
+  ],
+  "visual": true,
+  "evidence": [
+   "Access to Finance",
+   "\\b85\\b"
+  ],
+  "answer": [
+   "Access to Finance",
+   "\\b85\\b"
+  ]
+ },
+ {
+  "id": "V3",
+  "question": "How many private equity impact funds focus on Green Technology and Cleantech?",
+  "gold": "88 (Figure 6).",
+  "pages": [
+   7
+  ],
+  "visual": true,
+  "evidence": [
+   "Green Technology",
+   "\\b88\\b"
+  ],
+  "answer": [
+   "\\b88\\b"
+  ]
+ },
+ {
+  "id": "V4",
+  "question": "Which impact theme leads real asset impact funds and with how many funds?",
+  "gold": "Environmental Markets and Sustainable Real Assets, 50 funds (Figure 7).",
+  "pages": [
+   7
+  ],
+  "visual": true,
+  "evidence": [
+   "Environmental Markets",
+   "\\b50\\b"
+  ],
+  "answer": [
+   "Environmental Markets",
+   "\\b50\\b"
+  ]
+ },
+ {
+  "id": "V5",
+  "question": "What percentage of impact investments outperformed, were in line with, and underperformed their return expectations in 2014?",
+  "gold": "14% outperforming, 78% in line, 9% underperforming (Figure 8).",
+  "pages": [
+   8
+  ],
+  "visual": true,
+  "evidence": [
+   "\\b14\\s?%",
+   "\\b78\\s?%",
+   "\\b9\\s?%"
+  ],
+  "answer": [
+   "14\\s?%",
+   "78\\s?%",
+   "9\\s?%"
+  ]
+ },
+ {
+  "id": "V6",
+  "question": "What share of impact investments met or exceeded their impact expectations in 2014?",
+  "gold": "98% (27% outperforming + 71% in line; 2% underperforming).",
+  "pages": [
+   8
+  ],
+  "visual": true,
+  "evidence": [
+   "\\b27\\s?%",
+   "\\b71\\s?%",
+   "\\b2\\s?%"
+  ],
+  "answer": [
+   "98\\s?%"
+  ]
+ },
+ {
+  "id": "V7",
+  "question": "In the social impact bond model, how does money flow between the parties?",
+  "gold": "Government -> bond-issuing organization -> service providers; private investors fund the issuer and are repaid by it (Figure 5).",
+  "pages": [
+   6
+  ],
+  "visual": true,
+  "evidence": [
+   "Government",
+   "Service providers",
+   "Private investors"
+  ],
+  "answer": [
+   "government",
+   "service provider",
+   "investor"
+  ]
+ },
+ {
+  "id": "V8",
+  "question": "In Figure 1, between which two survey years did SRI assets grow the most?",
+  "gold": "2012 to 2014 (about $4,000B to about $7,000B).",
+  "pages": [
+   3
+  ],
+  "visual": true,
+  "evidence": [
+   "\\b2012\\b",
+   "\\b2014\\b"
+  ],
+  "answer": [
+   "2012",
+   "2014"
+  ]
+ },
+ {
+  "id": "V9",
+  "question": "In Figure 2, how are the levels of responsible investing ordered by investor engagement and social return?",
+  "gold": "Exclusionary (negative screening) lowest, then inclusionary (positive screening), then impact investments & shareholder activism highest.",
+  "pages": [
+   4
+  ],
+  "visual": true,
+  "evidence": [
+   "Exclusionary",
+   "Inclusionary",
+   "Impact Investments"
+  ],
+  "answer": [
+   "exclusionary",
+   "inclusionary",
+   "impact investments"
+  ]
+ },
+ {
+  "id": "U1",
+  "question": "What internal rate of return did the impact funds in Figure 6 earn in 2016?",
+  "gold": "Not in the document (Figure 6 shows fund counts as of August 2014, no returns).",
+  "pages": [],
+  "visual": false,
+  "unanswerable": true,
+  "evidence": [],
+  "answer": [
+   "\\b(do|does|did|is|are)(n't| not)\\b|\\bnot (in|contain|provide|include|state|report|mention|specif|available|present|given|cover)|\\bno (information|data|mention|details?|figures?)\\b|\\bcannot\\b|\\bcan't\\b|\\bunable\\b|\\bnone of the (passages|documents|context)"
+  ]
+ },
+ {
+  "id": "U2",
+  "question": "Who is the CEO of Marquette Associates?",
+  "gold": "Not in the document.",
+  "pages": [],
+  "visual": false,
+  "unanswerable": true,
+  "evidence": [],
+  "answer": [
+   "\\b(do|does|did|is|are)(n't| not)\\b|\\bnot (in|contain|provide|include|state|report|mention|specif|available|present|given|cover)|\\bno (information|data|mention|details?|figures?)\\b|\\bcannot\\b|\\bcan't\\b|\\bunable\\b|\\bnone of the (passages|documents|context)"
+  ]
+ }
+]

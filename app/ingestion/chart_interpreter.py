@@ -405,6 +405,10 @@ def process_image_region(
                       image), whichever path (caption_fn or local models)
                       is active. Detection always runs regardless.
         caption_fn  : optional callable(pil_image, context, is_chart) -> str.
+                      If the string starts with "[Chart Data]" or
+                      "[Image Description]" that tag decides the method
+                      (the model's own classification beats the pixel
+                      detector); "[Skip]" means logo/decorative.
                       When provided, this is the primary interpretation
                       path for both chart and non-chart regions. None =
                       fall back to local DePlot+Pix2Struct for charts,
@@ -428,6 +432,8 @@ def process_image_region(
           "chart_skipped" -- chart detected, use_vision was off
           "image_skipped" -- non-chart image, use_vision off or no
                               caption_fn and use_vision off
+          "image_ignored" -- caption_fn classified it as a logo or
+                              decorative art ("[Skip]"); nothing indexed
           "ocr"           -- fallback (interpretation returned nothing)
           "skipped"       -- image too small / invalid to process at all
     """
@@ -466,8 +472,18 @@ def process_image_region(
         # when chart_detected, general-description prompt otherwise.
         logger.info("%s -- running VLM interpretation",
                      "Chart detected" if chart_detected else "Image detected")
-        result = caption_fn(pil_image, context, chart_detected)
-        if result.strip():
+        result = (caption_fn(pil_image, context, chart_detected) or "").strip()
+        if result == "[Skip]":
+            # The model classified the region as a logo / decorative art:
+            # nothing worth indexing, and OCR of a logo is noise.
+            logger.info("VLM classified region as logo/decorative -- not indexed")
+            return "", "image_ignored"
+        if result.startswith("[Chart Data]"):
+            return result, "vlm_chart"
+        if result.startswith("[Image Description]"):
+            return result, "vlm_caption"
+        if result:
+            # caption_fn without its own tag (custom callable): tag from detector.
             tag = "[Chart Data]" if chart_detected else "[Image Description]"
             method = "vlm_chart" if chart_detected else "vlm_caption"
             return f"{tag}\n{result}", method

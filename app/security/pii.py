@@ -207,16 +207,39 @@ _OCR_ROBUST_PATTERNS: Dict[str, str] = {
 
 _compiled_structural = {k: re.compile(v) for k, v in STRUCTURAL_PATTERNS.items()}
 
+# Labels must start at a word boundary: without \b, "Image:" matched the AGE
+# label, "Percentage:"/"Page:" too, "Hotel:" matched PHONE (tel), "Spin:" PIN
+# and "Filename:" NAME -- each wiping the rest of the line. Claude vision
+# output ("[Image: ...]") hit this on every page with a photo.
 _compiled_context = [
     (
-        re.compile(label, re.IGNORECASE),
+        re.compile(r"\b" + label, re.IGNORECASE),
         tag,
-        re.compile(label + _CONTEXT_VALUE_RE, re.IGNORECASE),
+        re.compile(r"\b" + label + _CONTEXT_VALUE_RE, re.IGNORECASE),
     )
     for label, tag in CONTEXT_LABEL_PATTERNS
 ]
 
 _compiled_ocr = {k: re.compile(v) for k, v in _OCR_ROBUST_PATTERNS.items()}
+
+
+# Digit-group IDs (card, Aadhaar) also match runs of years, e.g. a chart's
+# x-axis "1995 1997 1999 2001" or "2003 2005 2007 2010". When every 4-digit
+# group is a plausible year (1900-2099) the match is left alone. A real card or
+# Aadhaar made only of year-like groups is rare; that's the trade-off.
+_YEAR_RUN_KEYS = {"CARD_NUMBER", "AADHAAR"}
+_YEAR = re.compile(r"\d{4}")
+
+
+def _is_year_run(match_text: str) -> bool:
+    groups = _YEAR.findall(match_text)
+    return len(groups) >= 3 and all(1900 <= int(g) <= 2099 for g in groups)
+
+
+def _sub(pattern, key: str, text: str) -> str:
+    if key not in _YEAR_RUN_KEYS:
+        return pattern.sub(f"[{key}]", text)
+    return pattern.sub(lambda m: m.group(0) if _is_year_run(m.group(0)) else f"[{key}]", text)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,7 +252,8 @@ def detect_pii(text: str) -> Dict[str, List[str]]:
     for key, pattern in _compiled_structural.items():
         matches = pattern.findall(text)
         flat = [m if isinstance(m, str) else m[0] for m in matches]
-        flat = [m.strip() for m in flat if m.strip()]
+        flat = [m.strip() for m in flat if m.strip()
+                and not (key in _YEAR_RUN_KEYS and _is_year_run(m))]
         if flat:
             findings[key] = list(dict.fromkeys(flat))
 
@@ -260,7 +284,7 @@ def mask_pii(text: str) -> str:
     for key, pattern in _compiled_structural.items():
         if key in skip:
             continue
-        text = pattern.sub(f"[{key}]", text)
+        text = _sub(pattern, key, text)
 
     # Pass 2
     for label_re, tag, full_re in _compiled_context:
@@ -275,7 +299,7 @@ def mask_pii(text: str) -> str:
     for key, pattern in _compiled_ocr.items():
         if key in skip:
             continue
-        text = pattern.sub(f"[{key}]", text)
+        text = _sub(pattern, key, text)
 
     return text
 

@@ -91,8 +91,8 @@ async def index_endpoint(
     # app/ingestion/image_captioner.py). use_vision gates chart
     # interpretation only (free, local models); this gates VLM captioning.
     caption_images:   bool = Form(False),
-    caption_provider: str  = Form("openai"),
-    caption_model:    str  = Form("gpt-4o-mini"),
+    caption_provider: str  = Form(""),
+    caption_model:    str  = Form(""),
 
     # Chunking settings
     chunk_size:    int = Form(500),

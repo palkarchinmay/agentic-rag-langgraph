@@ -11,6 +11,7 @@ rebuild_settings_widget() is also imported by ui.admin_actions
 import, since this module doesn't need anything from admin_actions.
 """
 
+from app.config.vision_models import vision_model_choices, caption_spec, caption_provider_model
 import os
 import logging
 
@@ -338,16 +339,8 @@ async def refresh_settings_sidebar():
             cl.input_widget.Select(
                 id="caption_model_full",
                 label="🖼️ Vision/Caption Model (provider:model)",
-                values=[
-                    "openai:gpt-4o-mini", "openai:gpt-4o",
-                    "google:gemini-2.5-flash", "google:gemini-2.0-flash",
-                    "anthropic:claude-3-5-sonnet", "anthropic:claude-3-haiku",
-                    "azure:gpt-4o-mini", "azure:gpt-4o",
-                ],
-                initial_value=(
-                    f"{config.get('caption_provider', config.get('llm_provider', 'openai'))}:"
-                    f"{config.get('caption_model', config.get('llm_model', 'gpt-4o-mini'))}"
-                ),
+                values=vision_model_choices(caption_spec(config)),
+                initial_value=caption_spec(config),
             ),
             cl.input_widget.TextInput(
                 id="api_url", label="🔌 API Endpoint URL",
@@ -431,16 +424,8 @@ async def rebuild_settings_widget(config: dict):
         cl.input_widget.Select(
             id="caption_model_full",
             label="🖼️ Vision/Caption Model (provider:model)",
-            values=[
-                "openai:gpt-4o-mini", "openai:gpt-4o",
-                "google:gemini-2.5-flash", "google:gemini-2.0-flash",
-                "anthropic:claude-3-5-sonnet", "anthropic:claude-3-haiku",
-                "azure:gpt-4o-mini", "azure:gpt-4o",
-            ],
-            initial_value=(
-                f"{config.get('caption_provider', config.get('llm_provider', 'openai'))}:"
-                f"{config.get('caption_model', config.get('llm_model', 'gpt-4o-mini'))}"
-            ),
+            values=vision_model_choices(caption_spec(config)),
+            initial_value=caption_spec(config),
         ),
         cl.input_widget.Select(
             id="timezone", label="🌍 Display Timezone",
@@ -557,8 +542,7 @@ async def on_settings_update(settings: dict):
         tips = ["🖼️ **Vision Mode tips**\n"]
 
         if just_enabled:
-            cap_provider = config.get("caption_provider", config.get("llm_provider", "openai"))
-            cap_model = config.get("caption_model", config.get("llm_model", "gpt-4o-mini"))
+            cap_provider, cap_model = caption_provider_model(config)
             tips.append(
                 f"- Your **Vision/Caption Model** is set to `{cap_provider}:{cap_model}`. "
                 f"Make sure that provider's API key is actually configured — if it isn't, "

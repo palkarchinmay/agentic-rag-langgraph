@@ -4,12 +4,18 @@ parser.py — Document parsers for PDF, DOCX, PPTX, PPT, images, text.
 All parse_* functions accept:
     file        : file-like object (NamedBytesIO or open file)
     ocr_method  : 'easyocr' | 'pytesseract' | 'textract' | 'docai' | 'azure_di'
+                  | 'vision' (any vision LLM, chosen by VISION_MODEL)
     use_vision  : bool — route chart images through DePlot/Pix2Struct (True)
                          or always use OCR (False, faster, offline)
+    caption_images / caption_provider / caption_model
+                : send image regions to a vision LLM via image_captioner.
+                  provider/model default to VISION_MODEL
+                  (provider:model, default anthropic:claude-opus-5-5).
 """
 
 import io
 import os
+import re
 import cv2
 import tempfile
 import numpy as np
@@ -21,8 +27,10 @@ from docx import Document as DocxDocument
 
 from app.ingestion.cleaner import clean_ocr_text
 from app.ingestion.schema import Document
-from app.ingestion.ocr import extract_text
+from app.ingestion.ocr import extract_text, normalize_method
 from app.ingestion.chart_interpreter import process_image_region
+from app.ingestion.layout import extract_text_reading_order
+from app.ingestion import doc_title as _doc_title
 from app.security.pii import mask_pii
 
 logger = logging.getLogger("financial_rag.parser")
@@ -55,12 +63,87 @@ def _pil_to_np(image: Image.Image) -> np.ndarray:
     return cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
 
 
+# OCR methods that call a remote API per page (more parallel workers).
+_CLOUD_OCR = {"docai", "textract", "azure_di", "vision"}
+
+
+def _resize_only(image_np: np.ndarray) -> np.ndarray:
+    h, w = image_np.shape[:2]
+    if max(h, w) > MAX_IMAGE_SIDE_PX:
+        scale = MAX_IMAGE_SIDE_PX / max(h, w)
+        image_np = cv2.resize(image_np, (int(w*scale), int(h*scale)),
+                              interpolation=cv2.INTER_AREA)
+    return image_np
+
+
 def _make_ocr_fn(ocr_method: str):
+    method = normalize_method(ocr_method)
+
     def ocr_fn(image_np):
+        if method == "vision":
+            # Vision LLMs read colour charts and layout; grayscale +
+            # adaptive threshold would destroy exactly that. Resize only.
+            # The output is Markdown, so skip the OCR-noise cleaner too.
+            return extract_text(_resize_only(image_np), method=method)
         processed = preprocess_for_ocr(image_np)
-        raw       = extract_text(processed, method=ocr_method)
+        raw       = extract_text(processed, method=method)
         return clean_ocr_text(raw)
     return ocr_fn
+
+
+def _resolve_caption_model(caption_provider=None, caption_model=None):
+    """Explicit provider/model win; otherwise VISION_MODEL (provider:model)."""
+    if caption_provider and caption_model:
+        return caption_provider, caption_model
+    from app.providers.llm.factory import parse_model_spec, default_model
+    provider, model = parse_model_spec(
+        os.getenv("VISION_MODEL", "anthropic:claude-opus-5-5"))
+    provider = caption_provider or provider
+    return provider, caption_model or model or default_model(provider)
+
+
+def _make_caption_fn(caption_images: bool, caption_provider=None, caption_model=None):
+    """One place that builds the caption callback for every parser."""
+    if not caption_images:
+        return None
+    from app.ingestion.image_captioner import caption_image_with_vlm
+    provider, model = _resolve_caption_model(caption_provider, caption_model)
+
+    def caption_fn(pil_img, ctx, is_chart):
+        return caption_image_with_vlm(pil_img, provider, model, ctx, is_chart)
+    return caption_fn
+
+
+def _interpret_scanned_page(image_np, ocr_fn, ocr_method, context="",
+                            use_vision=True, caption_fn=None) -> list:
+    """
+    (content, method) pairs for one scanned page.
+
+    - OCR method 'vision': one full-page transcription (text + tables +
+      charts as Markdown). Captioning the whole page as well would pay twice.
+    - Otherwise as before (process_image_region), with one fix: when the page
+      isn't a chart, the caption prompt returns a <200-word description, which
+      used to REPLACE the page's OCR text. A scanned text page then lost most
+      of its words. Now the OCR text is kept and the description added.
+    """
+    if normalize_method(ocr_method) == "vision":
+        text = ocr_fn(image_np)
+        return [(text, "ocr")] if text.strip() else []
+
+    content, method = process_image_region(
+        image_np, ocr_fn, context=context,
+        use_vision=use_vision, caption_fn=caption_fn,
+    )
+    outputs = []
+    if method in ("vlm_caption", "image_ignored"):
+        # image_ignored (model said logo/decorative) on a WHOLE scanned page
+        # is a misjudgement worth hedging: keep the page's OCR text.
+        ocr_text = ocr_fn(image_np)
+        if ocr_text.strip():
+            outputs.append((ocr_text, "ocr"))
+    if content.strip():
+        outputs.append((content, method))
+    return outputs
 
 
 # ── Section assembler ────────────────────────────────────────────────────────
@@ -91,6 +174,37 @@ def _assemble(text="", table_text="", image_outputs=None) -> str:
     return "\n\n".join(sections)
 
 
+_WORD_RE = None
+
+
+def _containment(part: str, whole: str) -> float:
+    """Share of `part`'s distinct words (3+ letters, or numbers) also in `whole`."""
+    global _WORD_RE
+    import re
+    _WORD_RE = _WORD_RE or re.compile(r"\d[\d.,]*\d%?|\d%?|[a-z][a-z'-]{2,}")
+    pw = set(_WORD_RE.findall(part.lower()))
+    if not pw:
+        return 0.0
+    ww = set(_WORD_RE.findall(whole.lower()))
+    return len(pw & ww) / len(pw)
+
+
+def _has_structure(content: str) -> bool:
+    """Tables ('a | b' rows) or diagram arrows: the pairing/flow is new
+    information even when every word also appears in the page text."""
+    table_rows = sum(1 for line in content.splitlines() if line.count("|") >= 2)
+    return table_rows >= 2 or "->" in content or "\u2192" in content
+
+
+def _repeats_page_text(content: str, page_text: str, threshold: float = 0.8) -> bool:
+    """True when a region's text/description only repeats the page text:
+    >= threshold of its words are on the page and it adds no table/diagram
+    structure."""
+    if not content.strip() or _has_structure(content):
+        return False
+    return _containment(content, page_text) >= threshold
+
+
 def _overlap_ratio(a: str, b: str) -> float:
     wa = set(a.lower().split()); wb = set(b.lower().split())
     if not wa or not wb: return 0.0
@@ -114,10 +228,10 @@ _CLUSTER_MERGE_PAD_PT = 15   # merge shapes within this many PDF points of each 
 _REGION_EXPAND_PT     = 20   # expand final region bbox to catch axis labels/titles
 
 
-def _cluster_vector_regions(page) -> list:
+def _cluster_vector_regions(page, pad: float = _REGION_EXPAND_PT) -> list:
     """Returns a list of (x0, top, x1, bottom) bounding boxes in PDF point
     coordinates (top-down, matching image conventions) -- one per dense
-    cluster of vector-drawn shapes on the page."""
+    cluster of vector-drawn shapes on the page, expanded by pad."""
     objects = []
     for r in page.rects:
         objects.append((r["x0"], r["top"], r["x1"], r["bottom"]))
@@ -164,10 +278,10 @@ def _cluster_vector_regions(page) -> list:
     for group in groups.values():
         if len(group) < _MIN_CLUSTER_OBJECTS:
             continue
-        x0 = min(o[0] for o in group) - _REGION_EXPAND_PT
-        y0 = min(o[1] for o in group) - _REGION_EXPAND_PT
-        x1 = max(o[2] for o in group) + _REGION_EXPAND_PT
-        y1 = max(o[3] for o in group) + _REGION_EXPAND_PT
+        x0 = min(o[0] for o in group) - pad
+        y0 = min(o[1] for o in group) - pad
+        x1 = max(o[2] for o in group) + pad
+        y1 = max(o[3] for o in group) + pad
         regions.append((x0, y0, x1, y1))
 
     return regions
@@ -187,23 +301,290 @@ def _crop_region(pil_image: Image.Image, bbox_pt: tuple, dpi: int) -> Image.Imag
     return pil_image.crop(px_box)
 
 
+# Region growth: a vector cluster or an embedded image usually stops at the
+# plot area, but the chart's title, axis labels, legend and source line are
+# text objects printed just outside it. Those words are pulled in when they
+# sit within a line or so of the region and overlap it horizontally or
+# vertically; repeated until nothing new is close. All thresholds are
+# relative to the page's median word height, so they hold at any font size.
+_GROW_GAP_LINES   = 2.0   # how far (in word heights) a word may sit from the region
+_GROW_MAX_ROUNDS  = 6
+_GROW_MAX_WORDS   = 14    # a line above/below longer than this is body text, not a title
+_GROW_MAX_ABOVE   = 3     # title lines (figure number, title, subtitle)
+_GROW_MAX_BELOW   = 6     # axis labels, legend, source, notes
+_GROW_SIDE_WORDS  = 4     # a line left/right longer than this is body text, not a label
+_REGION_TEXT_CHARS = 1500
+
+
+def _median_word_height(words) -> float:
+    hs = sorted(w["bottom"] - w["top"] for w in words if w["bottom"] > w["top"])
+    return hs[len(hs) // 2] if hs else 10.0
+
+
+def _word_lines(words, tol):
+    """Group words into visual lines: same top within tol, and split where
+    the horizontal gap is wider than 1.6*tol (0.8 word heights: wider than
+    a word space, narrower than a column gutter), so two columns side by
+    side stay two separate lines."""
+    rows = []
+    for w in sorted(words, key=lambda w: w["top"]):
+        if rows and abs(rows[-1][0]["top"] - w["top"]) <= tol:
+            rows[-1].append(w)
+        else:
+            rows.append([w])
+    lines = []
+    for row in rows:
+        cur = None
+        for w in sorted(row, key=lambda w: w["x0"]):
+            if cur is not None and w["x0"] - cur["x1"] <= 1.6 * tol:
+                cur["words"].append(w)
+                cur["x1"] = max(cur["x1"], w["x1"])
+                cur["top"] = min(cur["top"], w["top"])
+                cur["bottom"] = max(cur["bottom"], w["bottom"])
+            else:
+                cur = {"top": w["top"], "bottom": w["bottom"],
+                       "x0": w["x0"], "x1": w["x1"], "words": [w]}
+                lines.append(cur)
+    return lines
+
+
+def _inside(w, bbox, slack=0.5):
+    cx, cy = (w["x0"] + w["x1"]) / 2, (w["top"] + w["bottom"]) / 2
+    return bbox[0] - slack <= cx <= bbox[2] + slack and bbox[1] - slack <= cy <= bbox[3] + slack
+
+
+_CAPTION_LINE_RE = re.compile(
+    r"(?i)^\W*(figure|fig\.|chart|table|exhibit|graph|diagram|plate|map)\s*[\dA-Z]+\b")
+_FOOTER_LINE_RE = re.compile(r"(?i)^\W*(sources?|notes?|data)\s*[:.]")
+_BODY_RUN_LINES = 3      # aligned prose lines in a row = a text column
+_PROSE_WORDS    = 4
+_PROSE_CHARS    = 20
+_BODY_PITCH     = 1.6    # max top-to-top distance of consecutive body lines
+
+
+def _mark_body_lines(lines, h):
+    """Flag lines that belong to running text (a paragraph / column), so a
+    figure never grows into them. Running text = at least _BODY_RUN_LINES
+    prose-like lines stacked at normal line spacing with the same left
+    edge; every line lying inside the column that run occupies (short last
+    lines, indented first lines, bullets) belongs to it too. Figure titles (1-2 lines),
+    axis labels and legends do not form such runs."""
+    def prose(l):
+        txt = " ".join(w["text"] for w in l["words"])
+        return len(l["words"]) >= _PROSE_WORDS and len(txt) >= _PROSE_CHARS
+    for l in lines:
+        l["_body"] = False
+        l["_incol"] = False
+    cand = sorted((l for l in lines if prose(l)), key=lambda l: l["top"])
+    runs, used = [], set()
+    for i, l in enumerate(cand):
+        if i in used:
+            continue
+        run, last = [l], l
+        for j in range(i + 1, len(cand)):
+            m = cand[j]
+            if m["top"] - last["top"] > 2.2 * h:
+                if m["top"] - last["top"] > 6 * h:
+                    break
+                continue
+            if j not in used and abs(m["x0"] - last["x0"]) <= h and m["top"] > last["top"]:
+                run.append(m); used.add(j); last = m
+        if len(run) >= _BODY_RUN_LINES:
+            runs.append(run)
+    for run in runs:
+        # the column the run occupies; lines fully inside it (indented first
+        # lines, bullets, short last lines) are running text too
+        xs0 = sorted(l["x0"] for l in run)
+        xs1 = sorted(l["x1"] for l in run)
+        cx0 = xs0[len(xs0) // 2] - h
+        cx1 = xs1[(3 * len(xs1)) // 4] + h
+        top, bottom = run[0]["top"] - 1.2 * h, run[-1]["bottom"] + 1.2 * h
+        for l in lines:
+            if cx0 <= l["x0"] and l["x1"] <= cx1 and top <= l["top"] <= bottom:
+                l["_body"] = True
+        # carry on through the column while lines follow at line pitch
+        # (a bullet list after the paragraph, a short heading inside it)
+        col = sorted((l for l in lines if cx0 <= l["x0"] and l["x1"] <= cx1),
+                     key=lambda l: l["top"])
+        # a heading of this column (left-aligned, inside it) is not a label
+        # of a figure next to it; vertical growth may still take it
+        for l in col:
+            if abs(l["x0"] - (cx0 + h)) <= h:
+                l["_incol"] = True
+        for seq in (col, col[::-1]):
+            prev = None
+            for l in seq:
+                if l["_body"]:
+                    prev = l
+                elif prev is not None and abs(l["top"] - prev["top"]) <= _BODY_PITCH * h:
+                    l["_body"] = True
+                    prev = l
+                else:
+                    prev = None
+
+
+def _clip_to_text(bbox, core, lines):
+    """Shrink the padding of bbox where it would cut into running text
+    lying outside core (the figure itself)."""
+    x0, y0, x1, y1 = bbox
+    cx0, cy0, cx1, cy1 = core
+    for l in lines:
+        if not l.get("_body"):
+            continue
+        lx0, ly0, lx1, ly1 = l["x0"], l["top"], l["x1"], l["bottom"]
+        if min(x1, lx1) <= max(x0, lx0) or min(y1, ly1) <= max(y0, ly0):
+            continue                                     # not in the box
+        if min(cx1, lx1) > max(cx0, lx0) and min(cy1, ly1) > max(cy0, ly0):
+            continue                                     # overlaps the figure itself
+        if lx0 >= cx1 - 1:
+            x1 = min(x1, lx0 - 1)
+        elif lx1 <= cx0 + 1:
+            x0 = max(x0, lx1 + 1)
+        elif ly1 <= cy0 + 1:
+            y0 = max(y0, ly1 + 1)
+        elif ly0 >= cy1 - 1:
+            y1 = min(y1, ly0 - 1)
+    return (x0, y0, x1, y1)
+
+
+def _grow_region(bbox, lines, h, page_w=None, page_h=None):
+    """Extend bbox over nearby short text lines (titles, axis labels,
+    legends, source notes). A line qualifies when it is within
+    _GROW_GAP_LINES word heights of the box and lies within its x-span
+    (above / below, at most _GROW_MAX_ABOVE / _GROW_MAX_BELOW text rows,
+    and not past a caption line such as 'Figure 3 ...') or is
+    a short label beside it. Long lines and lines that mostly stick out of
+    the box are body text and are left alone, so a chart never swallows the
+    paragraph or column next to it."""
+    x0, y0, x1, y1 = bbox
+    gap = _GROW_GAP_LINES * h
+    # a box that already spans (almost) the whole page height has nothing
+    # above/below to take, and every line beside it overlaps it: only
+    # grow in the direction that still makes sense
+    grow_v = not page_h or (y1 - y0) < 0.8 * page_h
+    grow_h = not page_w or (x1 - x0) < 0.8 * page_w
+    above, below = set(), set()  # text rows added outside the box, per side
+    stop_up = stop_down = False  # passed a caption line ("Figure 3 ...")
+    row = lambda y: round(y / (0.5 * h))
+    for _ in range(_GROW_MAX_ROUNDS):
+        grew = False
+        for ln in lines:
+            if ln.get("_used"):
+                continue
+            if len(ln["words"]) > _GROW_MAX_WORDS or ln.get("_body"):
+                continue
+            lx0, ly0, lx1, ly1 = ln["x0"], ln["top"], ln["x1"], ln["bottom"]
+            short = len(ln["words"]) <= _GROW_SIDE_WORDS
+            x_ov = min(x1, lx1) - max(x0, lx0)
+            y_ov = min(y1, ly1) - max(y0, ly0)
+            # "belongs to the figure's columns": most of the line lies within
+            # the region's x-span, or it starts at the region's left edge
+            # (a left-aligned title wider than the plot).
+            x_fit = x_ov > 0 and (x_ov >= 0.5 * (lx1 - lx0) or abs(lx0 - x0) <= gap)
+            up = x_fit and 0 <= y0 - ly1 <= gap and not stop_up and \
+                (len(above) < _GROW_MAX_ABOVE or row(ly0) in above)
+            text_ln = " ".join(w["text"] for w in ln["words"])
+            # a 'Source: ...' / 'Note: ...' line often sits a little lower
+            gap_dn = gap * 1.5 if _FOOTER_LINE_RE.match(text_ln) else gap
+            down = x_fit and 0 <= ly0 - y1 <= gap_dn and not stop_down and \
+                (len(below) < _GROW_MAX_BELOW or row(ly0) in below)
+            near_v = grow_v and (up or down)
+            # Side neighbours must be short (axis ticks, legend entries):
+            # a body-text column beside the chart is never pulled in.
+            near_h = grow_h and grow_v and y_ov > 0 and short and not ln.get("_incol") and \
+                (0 <= x0 - lx1 <= gap or 0 <= lx0 - x1 <= gap)
+            inside = y_ov > 0 and x_fit
+            if near_v or near_h or inside:
+                ln["_used"] = True
+                if inside and not (near_v or near_h) and \
+                        max(x0 - lx0, lx1 - x1, y0 - ly0, ly1 - y1) > gap:
+                    # a line that sticks far out of the box (a heading
+                    # running across a photo, say): read it, don't widen to it
+                    continue
+                caption = bool(_CAPTION_LINE_RE.match(text_ln))
+                if up and not inside:
+                    above.add(row(ly0))
+                    stop_up = stop_up or caption      # the figure's own title
+                if down and not inside:
+                    below.add(row(ly0))
+                    stop_down = stop_down or caption  # caption-below style
+                nb = (min(x0, lx0), min(y0, ly0), max(x1, lx1), max(y1, ly1))
+                if nb != (x0, y0, x1, y1):
+                    x0, y0, x1, y1 = nb
+                    grew = True
+        if not grew:
+            break
+    return (x0, y0, x1, y1)
+
+
+def _region_text(words, bbox, h) -> str:
+    inside = [w for w in words if _inside(w, bbox)]
+    lines = _word_lines(inside, h * 0.5)
+    lines.sort(key=lambda l: (l["top"], l["x0"]))
+    out = [" ".join(w["text"] for w in sorted(l["words"], key=lambda w: w["x0"])) for l in lines]
+    return "\n".join(out)[:_REGION_TEXT_CHARS]
+
+
+def _region_context(region_text: str, page_text: str) -> str:
+    """Context handed to the caption model for one region: the exact words
+    printed inside the (grown) region, then the start of the page text."""
+    parts = []
+    if region_text.strip():
+        parts.append("Text printed inside this figure in the PDF (exact, use it "
+                     "for the title, labels and numbers):\n" + region_text.strip())
+    if page_text.strip():
+        parts.append("Start of the page text:\n" + page_text.strip()[:400])
+    return "\n\n".join(parts)
+
+
 def _find_image_regions(page, pil_image: Image.Image, dpi: int) -> list:
-    """Returns a list of (cropped_pil_image, is_known_chart) tuples -- one
-    per embedded raster image AND one per detected vector-drawn chart
-    cluster on this page. Raster images get is_known_chart=False (still
-    need pixel-based is_chart() scoring, since a raster image could be a
-    chart OR a photo/logo -- no vector-structure confirmation either way).
-    Vector-cluster regions get is_known_chart=True (the clustering itself
-    is already strong evidence -- see process_image_region's known_chart
-    docstring for why pixel re-scoring is skipped for these)."""
+    """Returns a list of (cropped_pil_image, is_known_chart, region_text)
+    tuples -- one per embedded raster image AND one per detected
+    vector-drawn chart cluster on this page.
+
+    Raster images get is_known_chart=False (a raster could be a chart, a
+    photo or a logo). Vector clusters get is_known_chart=True.
+
+    Each region is first grown over the nearby short text lines (title,
+    axis labels, legend, source) so the crop shows the whole figure, and
+    the native PDF words inside the final box are returned as region_text.
+    The caption model gets that text as exact context, so titles and labels
+    are copied rather than re-read from pixels."""
+    try:
+        words = page.extract_words(keep_blank_chars=False, use_text_flow=False)
+        from app.ingestion.layout import _merge_spaced_words
+        words = _merge_spaced_words(
+            words, [c for c in page.chars if not c.get("text", "x").strip()])
+    except Exception:
+        words = []
+    h = _median_word_height(words)
+    lines = _word_lines(words, h * 0.5) if words else []
+
+    if lines:
+        _mark_body_lines(lines, h)
+
+    page_area = float(page.width * page.height) or 1.0
+    raw = [((img["x0"], img["top"], img["x1"], img["bottom"]), False) for img in page.images]
+    raw += [(bbox, True) for bbox in _cluster_vector_regions(page, pad=0)]
+
     crops = []
-
-    for img in page.images:
-        bbox = (img["x0"], img["top"], img["x1"], img["bottom"])
-        crops.append((_crop_region(pil_image, bbox, dpi), False))
-
-    for bbox in _cluster_vector_regions(page):
-        crops.append((_crop_region(pil_image, bbox, dpi), True))
+    for core, known in raw:
+        area = max(0.0, core[2] - core[0]) * max(0.0, core[3] - core[1])
+        if area >= 0.6 * page_area or not lines:
+            # Full-page background art: the page text is the context; no
+            # growth (it would absorb every line on the page).
+            crops.append((_crop_region(pil_image, core, dpi), known, ""))
+            continue
+        for ln in lines:
+            ln.pop("_used", None)
+        grown = _grow_region(core, lines, h, float(page.width), float(page.height))
+        # Margin for unlabeled tick marks / anti-aliasing, cut back where
+        # it would reach into running text beside the figure.
+        pad = _REGION_EXPAND_PT if known else 0.4 * h
+        bbox = _clip_to_text((grown[0] - pad, grown[1] - pad,
+                              grown[2] + pad, grown[3] + pad), grown, lines)
+        text = _region_text(words, bbox, h)
+        crops.append((_crop_region(pil_image, bbox, dpi), known, text))
 
     return crops
 
@@ -211,19 +592,15 @@ def _find_image_regions(page, pil_image: Image.Image, dpi: int) -> list:
 # ── PDF parser ────────────────────────────────────────────────────────────────
 
 def parse_pdf(file, ocr_method: str = "easyocr", use_vision: bool = True,
-               caption_images: bool = False, caption_provider: str = "openai",
-               caption_model: str = "gpt-4o-mini"):
+               caption_images: bool = False, caption_provider: str = None,
+               caption_model: str = None):
     """
     Parse PDF with parallel page processing.
     Cloud OCR backends (docai, textract, azure_di) benefit most from parallelism
     since each page is an independent API call.
     Local OCR (easyocr) uses 2 workers to avoid memory pressure.
     """
-    caption_fn = None
-    if caption_images:
-        from app.ingestion.image_captioner import caption_image_with_vlm
-        def caption_fn(pil_img, ctx, is_chart):
-            return caption_image_with_vlm(pil_img, caption_provider, caption_model, ctx, is_chart)
+    caption_fn = _make_caption_fn(caption_images, caption_provider, caption_model)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -232,7 +609,7 @@ def parse_pdf(file, ocr_method: str = "easyocr", use_vision: bool = True,
 
     # Cloud OCR = more parallel workers (each page = independent API call)
     # Local OCR  = fewer workers (shared GPU/CPU memory)
-    cloud_ocr = ocr_method in {"docai", "textract", "azure_di"}
+    cloud_ocr = normalize_method(ocr_method) in _CLOUD_OCR
     max_workers = 4 if cloud_ocr else 2
 
     def _process_page(args):
@@ -255,12 +632,12 @@ def parse_pdf(file, ocr_method: str = "easyocr", use_vision: bool = True,
                 # 0.13-0.37, well under the 0.42 detection threshold, even
                 # though the same chart cropped in isolation scores high).
                 print(f"  📄 Page {i+1}: digital + {len(image_regions)} region(s) to scan ({len(text)} chars)")
-                for region, is_known_chart in image_regions:
+                for region, is_known_chart, region_text in image_regions:
                     region_np = _pil_to_np(region)
                     try:
                         content, method = process_image_region(
                             region_np, ocr_fn,
-                            context=text[:300],
+                            context=_region_context(region_text, text),
                             use_vision=use_vision,
                             caption_fn=caption_fn,
                             known_chart=is_known_chart,
@@ -272,6 +649,14 @@ def parse_pdf(file, ocr_method: str = "easyocr", use_vision: bool = True,
                             # has_charts/has_images metadata, even when
                             # fallback OCR content is empty -- common for a
                             # pure bar chart with no readable text in it.
+                            # But if the region is a text box / sidebar whose
+                            # words are already in the page text, keep only
+                            # the signal: a second copy just takes retrieval
+                            # slots from other passages. Charts are never
+                            # dropped (their label/value pairing is new info
+                            # even when the bare numbers are in the text).
+                            if _repeats_page_text(content, text):
+                                content = ""
                             image_outputs.append((content, method))
                         elif content.strip() and _overlap_ratio(text, content) < 0.4:
                             # Genuinely new content (not duplicate of native text)
@@ -304,14 +689,11 @@ def parse_pdf(file, ocr_method: str = "easyocr", use_vision: bool = True,
         if image_np is None:
             return None
         try:
-            chart_content, method = process_image_region(
-                image_np, ocr_fn,
+            image_outputs.extend(_interpret_scanned_page(
+                image_np, ocr_fn, ocr_method,
                 context=f"Page {i+1} of {filename}",
-                use_vision=use_vision,
-                caption_fn=caption_fn,
-            )
-            if chart_content.strip():
-                image_outputs.append((chart_content, method))
+                use_vision=use_vision, caption_fn=caption_fn,
+            ))
         except Exception as e:
             logger.warning("Page %d OCR failed: %s", i+1, e)
 
@@ -339,10 +721,12 @@ def parse_pdf(file, ocr_method: str = "easyocr", use_vision: bool = True,
     # pages still skip rendering entirely (fast path preserved).
     page_data = []
     with pdfplumber.open(file) as pdf:
+        doc_title = _doc_title.pdf_title(pdf, filename)
         for i, page in enumerate(pdf.pages):
             page_w     = page.width or 595
             dpi        = PDF_RENDER_DPI_LARGE if page_w > 500 else PDF_RENDER_DPI_SMALL
-            text       = page.extract_text() or ""
+            # Reading order (multi-column safe); see layout.py
+            text       = extract_text_reading_order(page)
             is_scanned = len(text.strip()) < MIN_TEXT_CHARS_FOR_DIGITAL
 
             # Extract tables for digital pages
@@ -399,27 +783,24 @@ def parse_pdf(file, ocr_method: str = "easyocr", use_vision: bool = True,
                 results[idx] = doc
 
     # Return in original page order
-    return [results[i] for i in sorted(results.keys())]
+    return _doc_title.tag([results[i] for i in sorted(results.keys())], doc_title)
 
 
 # ── DOCX parser ───────────────────────────────────────────────────────────────
 
 def parse_docx(file, ocr_method: str = "easyocr", use_vision: bool = True,
-                caption_images: bool = False, caption_provider: str = "openai",
-                caption_model: str = "gpt-4o-mini"):
+                caption_images: bool = False, caption_provider: str = None,
+                caption_model: str = None):
     """
     Parse DOCX with section-aware chunking.
     Splits on Heading 1/2 paragraphs to produce section-level documents
     with heading metadata for citations.
     """
-    caption_fn = None
-    if caption_images:
-        from app.ingestion.image_captioner import caption_image_with_vlm
-        def caption_fn(pil_img, ctx, is_chart):
-            return caption_image_with_vlm(pil_img, caption_provider, caption_model, ctx, is_chart)
+    caption_fn = _make_caption_fn(caption_images, caption_provider, caption_model)
 
     doc      = DocxDocument(file)
     filename = getattr(file, "name", str(file))
+    doc_title = _doc_title.docx_title(doc, filename)
     ocr_fn   = _make_ocr_fn(ocr_method)
 
     # ── Extract tables ────────────────────────────────────────────────────────
@@ -560,22 +941,18 @@ def parse_docx(file, ocr_method: str = "easyocr", use_vision: bool = True,
             }
         ))
 
-    return docs if docs else [Document(
+    return _doc_title.tag(docs if docs else [Document(
         content="",
         metadata={"source": filename, "type": "docx"}
-    )]
+    )], doc_title)
 
 
 # ── PPTX parser ───────────────────────────────────────────────────────────────
 
 def parse_pptx(file, ocr_method: str = "easyocr", use_vision: bool = True,
-                caption_images: bool = False, caption_provider: str = "openai",
-                caption_model: str = "gpt-4o-mini"):
-    caption_fn = None
-    if caption_images:
-        from app.ingestion.image_captioner import caption_image_with_vlm
-        def caption_fn(pil_img, ctx, is_chart):
-            return caption_image_with_vlm(pil_img, caption_provider, caption_model, ctx, is_chart)
+                caption_images: bool = False, caption_provider: str = None,
+                caption_model: str = None):
+    caption_fn = _make_caption_fn(caption_images, caption_provider, caption_model)
 
     try:
         from pptx import Presentation
@@ -590,6 +967,7 @@ def parse_pptx(file, ocr_method: str = "easyocr", use_vision: bool = True,
 
     prs    = Presentation(file)
     ocr_fn = _make_ocr_fn(ocr_method)
+    doc_title = _doc_title.pptx_title(prs, filename)
     docs   = []
 
     for slide_idx, slide in enumerate(prs.slides):
@@ -649,7 +1027,7 @@ def parse_pptx(file, ocr_method: str = "easyocr", use_vision: bool = True,
                 "images_captioned":   any(m == "vlm_caption" for _, m in image_outputs),
             }
         ))
-    return docs
+    return _doc_title.tag(docs, doc_title)
 
 
 # ── PPT legacy (3-tier fallback) ──────────────────────────────────────────────
@@ -718,6 +1096,9 @@ def _try_ole_image_extract(file, filename, ocr_method, use_vision):
         data   = file.read() if hasattr(file, "read") else file
         ole    = olefile.OleFileIO(io.BytesIO(data))
         ocr_fn = _make_ocr_fn(ocr_method)
+        # Was an undefined name here (NameError -> whole OLE path failed).
+        # Legacy .ppt gets no captions: the caption settings aren't passed in.
+        caption_fn = None
 
         image_signatures = {
             b"\xff\xd8\xff": "jpeg",
@@ -802,13 +1183,9 @@ def _try_olefile_text(file, filename):
 # ── Standalone image ──────────────────────────────────────────────────────────
 
 def parse_image(file, ocr_method: str = "easyocr", use_vision: bool = True,
-                 caption_images: bool = False, caption_provider: str = "openai",
-                 caption_model: str = "gpt-4o-mini"):
-    caption_fn = None
-    if caption_images:
-        from app.ingestion.image_captioner import caption_image_with_vlm
-        def caption_fn(pil_img, ctx, is_chart):
-            return caption_image_with_vlm(pil_img, caption_provider, caption_model, ctx, is_chart)
+                 caption_images: bool = False, caption_provider: str = None,
+                 caption_model: str = None):
+    caption_fn = _make_caption_fn(caption_images, caption_provider, caption_model)
 
     filename = getattr(file, "name", str(file))
     ocr_fn   = _make_ocr_fn(ocr_method)
